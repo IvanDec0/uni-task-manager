@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Task - University Task Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">University Task Manager</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Tasks</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/courses">Courses</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container my-4">
+        <h1>Edit Task</h1>
+        
+        <form action="/tasks/{{.Task.ID}}" method="POST" class="mt-4">
+            <div class="mb-3">
+                <label for="title" class="form-label">Title</label>
+                <input type="text" class="form-control" id="title" name="title" value="{{.Task.Title}}" required>
+            </div>
+            
+            <div class="mb-3">
+                <label for="description" class="form-label">Description</label>
+                <textarea class="form-control" id="description" name="description" rows="3">{{.Task.Description}}</textarea>
+            </div>
+            
+            <div class="mb-3">
+                <label for="due_date" class="form-label">Due Date</label>
+                <input type="datetime-local" class="form-control" id="due_date" name="due_date" value="{{.Task.DueDate.Format "2006-01-02T15:04"}}" required>
+            </div>
+            
+            <div class="mb-3">
+                <label for="priority" class="form-label">Priority</label>
+                <select class="form-select" id="priority" name="priority">
+                    <option value="1" {{if eq .Task.Priority 1}}selected{{end}}>Very Low</option>
+                    <option value="2" {{if eq .Task.Priority 2}}selected{{end}}>Low</option>
+                    <option value="3" {{if eq .Task.Priority 3}}selected{{end}}>Medium</option>
+                    <option value="4" {{if eq .Task.Priority 4}}selected{{end}}>High</option>
+                    <option value="5" {{if eq .Task.Priority 5}}selected{{end}}>Critical</option>
+                </select>
+            </div>
+            
+            <div class="mb-3">
+                <label for="status" class="form-label">Status</label>
+                <select class="form-select" id="status" name="status">
+                    <option value="pending" {{if eq .Task.Status "pending"}}selected{{end}}>Pending</option>
+                    <option value="in_progress" {{if eq .Task.Status "in_progress"}}selected{{end}}>In Progress</option>
+                    <option value="completed" {{if eq .Task.Status "completed"}}selected{{end}}>Completed</option>
+                </select>
+            </div>
+            
+            <div class="mb-3">
+                <label for="course_id" class="form-label">Course</label>
+                <select class="form-select" id="course_id" name="course_id">
+                    <option value="">None</option>
+                    {{range .Courses}}
+                        <option value="{{.ID}}" {{if eq .ID $.Task.CourseID}}selected{{end}}>{{.Name}}</option>
+                    {{end}}
+                </select>
+            </div>
+            
+            <div class="d-flex justify-content-between">
+                <a href="/" class="btn btn-outline-secondary">Cancel</a>
+                <button type="submit" class="btn btn-primary">Update Task</button>
+            </div>
+        </form>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
