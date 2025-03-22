@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/IvanDec0/uni-task-manager/internal/models"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite" // Use pure Go SQLite implementation
 )
 
 // DB represents the database connection
@@ -17,7 +17,7 @@ type DB struct {
 
 // New creates a new database connection
 func New(dataSourceName string) (*DB, error) {
-	db, err := sql.Open("sqlite3", dataSourceName)
+	db, err := sql.Open("sqlite", dataSourceName) // Changed from "sqlite3" to "sqlite"
 	if err != nil {
 		return nil, err
 	}
