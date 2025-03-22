@@ -1,6 +1,9 @@
+// Package main is the entry point for the University Task Manager application.
+// It initializes the application components and starts the HTTP server.
 package main
 
 import (
+	"database/sql"
 	"html/template"
 	"log"
 	"net/http"
@@ -8,67 +11,130 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/IvanDec0/uni-task-manager/internal/database"
-	"github.com/IvanDec0/uni-task-manager/internal/handlers"
+	// Primary adapters (driving adapters)
+	httpHandlers "uni-task-manager/internal/adapters/primary/http"
+	// Secondary adapters (driven adapters)
+	"uni-task-manager/internal/adapters/secondary/sqlite"
+	// Domain services
+	"uni-task-manager/internal/domain/services"
+
 	"github.com/gorilla/mux"
+	_ "modernc.org/sqlite"
 )
 
+// main is the application entry point that initializes and starts the server
 func main() {
-	// Configure logging
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// run encapsulates the core application startup logic and error handling
+func run() error {
+	// Configure logging with file and line number for better debugging
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Starting University Task Manager app...")
 
-	// Create database directory if it doesn't exist
-	dbDir := filepath.Join(".", "data")
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		log.Fatalf("Failed to create database directory: %v", err)
+	// Initialize infrastructure components (directories, etc.)
+	if err := setupInfrastructure(); err != nil {
+		return err
 	}
 
-	// Initialize database connection
-	dbPath := filepath.Join(dbDir, "uni-tasks.db")
-	db, err := database.New(dbPath)
+	// Initialize database connection and schema
+	db, err := initializeDatabase()
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		return err
 	}
 	defer db.Close()
 
-	// Initialize database schema
-	if err := db.Initialize(); err != nil {
-		log.Fatalf("Failed to initialize database schema: %v", err)
+	// Initialize application components (services, handlers)
+	app, err := initializeApplication(db)
+	if err != nil {
+		return err
 	}
 
-	// Parse templates
+	// Start HTTP server
+	return startServer(app)
+}
+
+// setupInfrastructure ensures required directories exist
+func setupInfrastructure() error {
+	dbDir := filepath.Join(".", "data")
+	return os.MkdirAll(dbDir, 0755)
+}
+
+// initializeDatabase sets up the SQLite database connection and schema
+func initializeDatabase() (*sql.DB, error) {
+	dbPath := filepath.Join(".", "data", "uni-tasks.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize schema
+	if err := createDatabaseSchema(db); err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+// application holds the initialized components of the application
+type application struct {
+	handler   *httpHandlers.Handler
+	templates *template.Template
+}
+
+// initializeApplication sets up all application components following hexagonal architecture
+func initializeApplication(db *sql.DB) (*application, error) {
+	// Initialize repositories (secondary/driven adapters)
+	taskRepo := sqlite.NewTaskRepository(db)
+	courseRepo := sqlite.NewCourseRepository(db)
+
+	// Initialize domain services
+	taskService := services.NewTaskService(taskRepo, courseRepo)
+	courseService := services.NewCourseService(courseRepo)
+
+	// Load HTML templates
 	templatesDir := filepath.Join(".", "web", "templates")
 	templates, err := template.ParseGlob(filepath.Join(templatesDir, "*.html"))
 	if err != nil {
-		log.Fatalf("Failed to parse templates: %v", err)
+		return nil, err
 	}
 
-	// Initialize handlers
-	h := handlers.NewHandler(db, templates)
+	// Initialize HTTP handlers (primary/driving adapters)
+	handler := httpHandlers.NewHandler(taskService, courseService, templates)
 
-	// Create router
+	return &application{
+		handler:   handler,
+		templates: templates,
+	}, nil
+}
+
+// startServer configures and starts the HTTP server
+func startServer(app *application) error {
+	// Create router and configure routes
 	r := mux.NewRouter()
 
-	// Web routes
-	r.HandleFunc("/", h.Index).Methods("GET")
-	r.HandleFunc("/tasks/new", h.CreateTaskForm).Methods("GET")
-	r.HandleFunc("/tasks", h.CreateTask).Methods("POST")
-	r.HandleFunc("/tasks/{id:[0-9]+}/edit", h.EditTaskForm).Methods("GET")
-	r.HandleFunc("/tasks/{id:[0-9]+}", h.UpdateTask).Methods("POST")
-	r.HandleFunc("/tasks/{id:[0-9]+}/delete", h.DeleteTask).Methods("POST")
-	r.HandleFunc("/courses", h.Courses).Methods("GET")
-	r.HandleFunc("/courses/new", h.CreateCourseForm).Methods("GET")
-	r.HandleFunc("/courses", h.CreateCourse).Methods("POST")
+	// Web routes for the user interface
+	r.HandleFunc("/", app.handler.Index).Methods("GET")
+	r.HandleFunc("/tasks/new", app.handler.CreateTaskForm).Methods("GET")
+	r.HandleFunc("/tasks", app.handler.CreateTask).Methods("POST")
+	r.HandleFunc("/tasks/{id:[0-9]+}/edit", app.handler.EditTaskForm).Methods("GET")
+	r.HandleFunc("/tasks/{id:[0-9]+}", app.handler.UpdateTask).Methods("POST")
+	r.HandleFunc("/tasks/{id:[0-9]+}/delete", app.handler.DeleteTask).Methods("POST")
+	r.HandleFunc("/courses", app.handler.ListCourses).Methods("GET")
+	r.HandleFunc("/courses/new", app.handler.CreateCourseForm).Methods("GET")
+	r.HandleFunc("/courses", app.handler.CreateCourse).Methods("POST")
 
-	// API routes
-	r.HandleFunc("/api/tasks", h.APIGetTasks).Methods("GET")
-	r.HandleFunc("/api/tasks/{id:[0-9]+}", h.APIGetTask).Methods("GET")
-	r.HandleFunc("/api/tasks", h.APICreateTask).Methods("POST")
-	r.HandleFunc("/api/tasks/{id:[0-9]+}", h.APIUpdateTask).Methods("PUT")
-	r.HandleFunc("/api/tasks/{id:[0-9]+}", h.APIDeleteTask).Methods("DELETE")
+	// API routes for programmatic access
+	r.HandleFunc("/api/tasks", app.handler.APIGetTasks).Methods("GET")
+	r.HandleFunc("/api/tasks/{id:[0-9]+}", app.handler.APIGetTask).Methods("GET")
+	r.HandleFunc("/api/tasks", app.handler.APICreateTask).Methods("POST")
+	r.HandleFunc("/api/tasks/{id:[0-9]+}", app.handler.APIUpdateTask).Methods("PUT")
+	r.HandleFunc("/api/tasks/{id:[0-9]+}", app.handler.APIDeleteTask).Methods("DELETE")
 
-	// Start server
+	// Configure server with timeouts for security and reliability
 	srv := &http.Server{
 		Handler:      r,
 		Addr:         ":8080",
@@ -77,5 +143,42 @@ func main() {
 	}
 
 	log.Println("Server started on http://localhost:8080")
-	log.Fatal(srv.ListenAndServe())
+	return srv.ListenAndServe()
+}
+
+// createDatabaseSchema initializes the SQLite database schema
+func createDatabaseSchema(db *sql.DB) error {
+	// Create courses table
+	_, err := db.Exec(`
+	CREATE TABLE IF NOT EXISTS courses (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		professor TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`)
+	if err != nil {
+		return err
+	}
+
+	// Create tasks table with foreign key to courses
+	_, err = db.Exec(`
+	CREATE TABLE IF NOT EXISTS tasks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		title TEXT NOT NULL,
+		description TEXT,
+		due_date DATETIME NOT NULL,
+		priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+		status TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed')),
+		course_id INTEGER,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		FOREIGN KEY (course_id) REFERENCES courses(id)
+	)`)
+	if err != nil {
+		return err
+	}
+
+	log.Println("Database tables initialized successfully")
+	return nil
 }

@@ -1,47 +1,54 @@
-package handlers
+// Package http provides the primary adapters (driving adapters) for HTTP-based interaction.
+// It implements both web interface handlers and REST API endpoints.
+package http
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/IvanDec0/uni-task-manager/internal/database"
-	"github.com/IvanDec0/uni-task-manager/internal/models"
+	"uni-task-manager/internal/domain/models"
+	"uni-task-manager/internal/ports/input"
+
 	"github.com/gorilla/mux"
 )
 
-// Handler contains dependencies for the handlers
+// Handler encapsulates the dependencies required for HTTP request handling.
+// It serves as a primary adapter in the hexagonal architecture.
 type Handler struct {
-	DB        *database.DB
-	Templates *template.Template
+	taskService   input.TaskService
+	courseService input.CourseService
+	templates     *template.Template
 }
 
-// NewHandler creates a new handler with dependencies
-func NewHandler(db *database.DB, templates *template.Template) *Handler {
+// NewHandler creates a new instance of Handler with the required dependencies.
+func NewHandler(taskService input.TaskService, courseService input.CourseService, templates *template.Template) *Handler {
 	return &Handler{
-		DB:        db,
-		Templates: templates,
+		taskService:   taskService,
+		courseService: courseService,
+		templates:     templates,
 	}
 }
 
-// Index handles the home page
+// Web Interface Handlers
+
+// Index handles the home page request, displaying all tasks and courses.
 func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
-	tasks, err := h.DB.GetAllTasks()
+	ctx := r.Context()
+	tasks, err := h.taskService.GetAllTasks(ctx)
 	if err != nil {
 		http.Error(w, "Error fetching tasks", http.StatusInternalServerError)
 		return
 	}
 
-	courses, err := h.DB.GetAllCourses()
+	courses, err := h.courseService.GetAllCourses(ctx)
 	if err != nil {
 		http.Error(w, "Error fetching courses", http.StatusInternalServerError)
 		return
 	}
 
-	// Create a map from course ID to course name for displaying in the template
 	courseMap := make(map[int64]string)
 	for _, course := range courses {
 		courseMap[course.ID] = course.Name
@@ -57,65 +64,54 @@ func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 		CourseMap: courseMap,
 	}
 
-	h.Templates.ExecuteTemplate(w, "index.html", data)
+	h.templates.ExecuteTemplate(w, "index.html", data)
 }
 
-// CreateTaskForm handles the task creation form
+// CreateTaskForm displays the form for creating a new task.
 func (h *Handler) CreateTaskForm(w http.ResponseWriter, r *http.Request) {
-	courses, err := h.DB.GetAllCourses()
+	courses, err := h.courseService.GetAllCourses(r.Context())
 	if err != nil {
 		http.Error(w, "Error fetching courses", http.StatusInternalServerError)
 		return
 	}
 
-	h.Templates.ExecuteTemplate(w, "create-task.html", courses)
+	h.templates.ExecuteTemplate(w, "create-task.html", courses)
 }
 
-// CreateTask handles the task creation POST request
+// CreateTask handles the submission of a new task from the web form.
 func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Error parsing form", http.StatusBadRequest)
 		return
 	}
 
-	// Parse course ID
-	courseID, err := strconv.ParseInt(r.FormValue("course_id"), 10, 64)
-	if err != nil {
-		courseID = 0 // No course selected
-	}
-
-	// Parse priority
-	priority, err := strconv.Atoi(r.FormValue("priority"))
-	if err != nil || priority < 1 || priority > 5 {
-		priority = 3 // Default to medium priority
-	}
-
-	// Parse due date
+	courseID, _ := strconv.ParseInt(r.FormValue("course_id"), 10, 64)
+	priority, _ := strconv.Atoi(r.FormValue("priority"))
 	dueDate, err := time.Parse("2006-01-02T15:04", r.FormValue("due_date"))
 	if err != nil {
 		http.Error(w, "Invalid due date format", http.StatusBadRequest)
 		return
 	}
 
-	task := models.Task{
+	task := &models.Task{
 		Title:       r.FormValue("title"),
 		Description: r.FormValue("description"),
 		DueDate:     dueDate,
 		Priority:    priority,
-		Status:      "pending",
+		Status:      models.TaskStatusPending,
 		CourseID:    courseID,
 	}
 
-	_, err = h.DB.CreateTask(task)
+	err = h.taskService.CreateTask(r.Context(), task)
 	if err != nil {
-		http.Error(w, "Error creating task", http.StatusInternalServerError)
+		http.Error(w, "Error creating task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// EditTaskForm handles the task edit form
+// EditTaskForm displays the form for editing an existing task.
 func (h *Handler) EditTaskForm(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -124,30 +120,31 @@ func (h *Handler) EditTaskForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.DB.GetTask(id)
+	ctx := r.Context()
+	task, err := h.taskService.GetTask(ctx, id)
 	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
+		http.Error(w, "Error fetching task", http.StatusInternalServerError)
 		return
 	}
 
-	courses, err := h.DB.GetAllCourses()
+	courses, err := h.courseService.GetAllCourses(ctx)
 	if err != nil {
 		http.Error(w, "Error fetching courses", http.StatusInternalServerError)
 		return
 	}
 
 	data := struct {
-		Task    models.Task
+		Task    *models.Task
 		Courses []models.Course
 	}{
 		Task:    task,
 		Courses: courses,
 	}
 
-	h.Templates.ExecuteTemplate(w, "edit-task.html", data)
+	h.templates.ExecuteTemplate(w, "edit-task.html", data)
 }
 
-// UpdateTask handles the task update POST request
+// UpdateTask handles the submission of task updates from the web form.
 func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -161,53 +158,34 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get existing task to preserve creation time
-	existingTask, err := h.DB.GetTask(id)
-	if err != nil {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-
-	// Parse course ID
-	courseID, err := strconv.ParseInt(r.FormValue("course_id"), 10, 64)
-	if err != nil {
-		courseID = 0 // No course selected
-	}
-
-	// Parse priority
-	priority, err := strconv.Atoi(r.FormValue("priority"))
-	if err != nil || priority < 1 || priority > 5 {
-		priority = 3 // Default to medium priority
-	}
-
-	// Parse due date
+	courseID, _ := strconv.ParseInt(r.FormValue("course_id"), 10, 64)
+	priority, _ := strconv.Atoi(r.FormValue("priority"))
 	dueDate, err := time.Parse("2006-01-02T15:04", r.FormValue("due_date"))
 	if err != nil {
 		http.Error(w, "Invalid due date format", http.StatusBadRequest)
 		return
 	}
 
-	task := models.Task{
+	task := &models.Task{
 		ID:          id,
 		Title:       r.FormValue("title"),
 		Description: r.FormValue("description"),
 		DueDate:     dueDate,
 		Priority:    priority,
-		Status:      r.FormValue("status"),
+		Status:      models.TaskStatus(r.FormValue("status")),
 		CourseID:    courseID,
-		CreatedAt:   existingTask.CreatedAt,
 	}
 
-	err = h.DB.UpdateTask(task)
+	err = h.taskService.UpdateTask(r.Context(), task)
 	if err != nil {
-		http.Error(w, "Error updating task", http.StatusInternalServerError)
+		http.Error(w, "Error updating task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// DeleteTask handles the task deletion
+// DeleteTask handles the deletion of a task from the web interface.
 func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -216,59 +194,62 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.DB.DeleteTask(id)
+	err = h.taskService.DeleteTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, "Error deleting task", http.StatusInternalServerError)
+		http.Error(w, "Error deleting task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// CreateCourseForm handles the course creation form
+// Course Management Handlers
+
+// CreateCourseForm displays the form for creating a new course.
 func (h *Handler) CreateCourseForm(w http.ResponseWriter, r *http.Request) {
-	h.Templates.ExecuteTemplate(w, "create-course.html", nil)
+	h.templates.ExecuteTemplate(w, "create-course.html", nil)
 }
 
-// CreateCourse handles the course creation POST request
+// CreateCourse handles the submission of a new course from the web form.
 func (h *Handler) CreateCourse(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Error parsing form", http.StatusBadRequest)
 		return
 	}
 
-	course := models.Course{
+	course := &models.Course{
 		Name:      r.FormValue("name"),
 		Professor: r.FormValue("professor"),
 	}
 
-	_, err := h.DB.CreateCourse(course)
+	err := h.courseService.CreateCourse(r.Context(), course)
 	if err != nil {
-		http.Error(w, "Error creating course", http.StatusInternalServerError)
+		http.Error(w, "Error creating course: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	http.Redirect(w, r, "/courses", http.StatusSeeOther)
 }
 
-// Courses handles the courses listing page
-func (h *Handler) Courses(w http.ResponseWriter, r *http.Request) {
-	courses, err := h.DB.GetAllCourses()
+// ListCourses displays the list of all courses.
+func (h *Handler) ListCourses(w http.ResponseWriter, r *http.Request) {
+	courses, err := h.courseService.GetAllCourses(r.Context())
 	if err != nil {
 		http.Error(w, "Error fetching courses", http.StatusInternalServerError)
 		return
 	}
 
-	h.Templates.ExecuteTemplate(w, "courses.html", courses)
+	h.templates.ExecuteTemplate(w, "courses.html", courses)
 }
 
-// API handlers for JSON responses
+// REST API Handlers
 
-// APIGetTasks returns all tasks as JSON
+// APIGetTasks handles GET requests to retrieve all tasks.
+// Returns a JSON array of tasks.
 func (h *Handler) APIGetTasks(w http.ResponseWriter, r *http.Request) {
-	tasks, err := h.DB.GetAllTasks()
+	tasks, err := h.taskService.GetAllTasks(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error fetching tasks: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Error fetching tasks", http.StatusInternalServerError)
 		return
 	}
 
@@ -276,7 +257,8 @@ func (h *Handler) APIGetTasks(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(tasks)
 }
 
-// APIGetTask returns a single task as JSON
+// APIGetTask handles GET requests to retrieve a specific task.
+// Returns a JSON object containing task details or 404 if not found.
 func (h *Handler) APIGetTask(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -285,8 +267,12 @@ func (h *Handler) APIGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.DB.GetTask(id)
+	task, err := h.taskService.GetTask(r.Context(), id)
 	if err != nil {
+		http.Error(w, "Error fetching task", http.StatusInternalServerError)
+		return
+	}
+	if task == nil {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
 	}
@@ -295,28 +281,28 @@ func (h *Handler) APIGetTask(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(task)
 }
 
-// APICreateTask creates a task from JSON
+// APICreateTask handles POST requests to create a new task.
+// Accepts a JSON task object in the request body.
 func (h *Handler) APICreateTask(w http.ResponseWriter, r *http.Request) {
 	var task models.Task
-	err := json.NewDecoder(r.Body).Decode(&task)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	id, err := h.DB.CreateTask(task)
+	err := h.taskService.CreateTask(r.Context(), &task)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error creating task: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Error creating task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	task.ID = id
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(task)
 }
 
-// APIUpdateTask updates a task from JSON
+// APIUpdateTask handles PUT requests to update an existing task.
+// Accepts a JSON task object in the request body.
 func (h *Handler) APIUpdateTask(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -326,23 +312,23 @@ func (h *Handler) APIUpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var task models.Task
-	err = json.NewDecoder(r.Body).Decode(&task)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	task.ID = id
-	err = h.DB.UpdateTask(task)
+	err = h.taskService.UpdateTask(r.Context(), &task)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error updating task: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Error updating task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 }
 
-// APIDeleteTask deletes a task
+// APIDeleteTask handles DELETE requests to remove a task.
+// Returns 204 No Content on success or appropriate error status.
 func (h *Handler) APIDeleteTask(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id, err := strconv.ParseInt(vars["id"], 10, 64)
@@ -351,9 +337,9 @@ func (h *Handler) APIDeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.DB.DeleteTask(id)
+	err = h.taskService.DeleteTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error deleting task: %v", err), http.StatusInternalServerError)
+		http.Error(w, "Error deleting task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
